@@ -1,0 +1,558 @@
+# This file is part of website. It is subject to the licence terms in the COPYRIGHT file found in the top-level directory of this distribution and at https://raw.githubusercontent.com/raphaelcohn/website/master/COPYRIGHT. No part of website, including this file, may be copied, modified, propagated, or distributed except according to the terms contained in the COPYRIGHT file.
+# Copyright © 2016 The developers of website. See the COPYRIGHT file in the top-level directory of this distribution and at https://raw.githubusercontent.com/raphaelcohn/website/master/COPYRIGHT.
+
+
+# brew install optipng pngcheck jpegoptim jpeginfo tiff2png tidy-html5 multimarkdown html-xml-utils
+# cmark
+
+
+core_dependency_requires '*' awk tr rm cp ln optipng pngcheck jpegoptim jpeginfo tiff2png gif2png
+website_generate_optimiseImageForEmbedding()
+{
+	local minimumQuality="$1"  # eg 80; if 100 then no lossless optimisation is performed
+	
+	local inputImageFilePath
+	if [ $# -eq 2 ]; then
+		inputImageFilePath="$2"
+	else
+		inputImageFilePath="$website_sourceFolderPath"/"$website_current_componentFolderPath"/"$website_current_componentName"
+	fi
+	
+	local mimeType="$(_website_generate_fileMimeType "$inputImageFilePath")"
+		
+	local fileExtension
+	case "$mimeType" in
+		
+		image/png)
+			fileExtension='png'
+		;;
+		
+		image/jpeg)
+			fileExtension='jpg'
+		;;
+		
+		image/tiff)
+			fileExtension='tif'
+		;;
+		
+		image/gif)
+			fileExtension='gif'
+		;;
+	
+		*)
+			core_exitError 1 "MIME type '$mimeType' is not supported"
+		;;
+		
+	esac
+	
+	local outputCacheFolderPath
+	_website_generate_makeOutputCacheFolder
+	local outputBaseImageFilePath="$outputCacheFolderPath"/image
+	local outputImageFilePath="$outputBaseImageFilePath"."$fileExtension"
+	local originalFilePath="$outputBaseImageFilePath".original."$fileExtension"
+	local losslessFilePath="$outputBaseImageFilePath".lossless."$fileExtension"
+	local lossyFilePath="$outputBaseImageFilePath".lossy."$fileExtension"
+	
+	case "$mimeType" in
+		
+		image/png)
+		
+			# Validate image
+			printf '%s\n' "Checking PNG is valid..." 1>&2
+			pngcheck "$inputFilePath" 1>&2
+			
+			# Original
+			cp "$inputImageFilePath" "$originalFilePath"
+						
+			# Lossless optimise
+			optipng -quiet -to "$losslessFilePath" -zc 9 -zm 9 -zw 32k -strip all -o7 "$originalFilePath"
+			
+			# Lossy optimise - see http://pointlessramblings.com/posts/pngquant_vs_pngcrush_vs_optipng_vs_pngnq/
+			if [ $minimumQuality -ne 100 ]; then
+				set +e
+					pngquant --speed 1 --strip --output "$lossyFilePath" --quality "$minimumQuality"-100 --transbug --skip-if-larger "$losslessFilePath"
+					local exitCode=$?
+				set -e
+				
+				# Failed to make a better image
+				if [ $exitCode -ne 0 ]; then
+					rm -rf "$lossyFilePath"
+					ln -s "$losslessFilePath" "$outputImageFilePath"
+				# Failed to make a better image
+				elif [ ! -e "$lossyFilePath" ]; then
+					ln -s "$losslessFilePath" "$outputImageFilePath"
+				else
+					ln -s "$lossyFilePath" "$outputImageFilePath"
+				fi
+			fi
+			
+			# Width and Height
+			_website_generate_pngDimension "$outputImageFilePath" width >"$outputBaseImageFilePath".width
+			_website_generate_pngDimension "$outputImageFilePath" height >"$outputBaseImageFilePath".height
+
+			# As a data-uri
+			_website_generate_toDataUri "$outputImageFilePath" "$mimeType" "$outputBaseImageFilePath"
+		;;
+		
+		image/jpeg)
+			
+			# Validate image
+			printf '%s\n' "Checking JPEG is valid..." 1>&2
+			jpeginfo --check "$inputImageFilePath"
+			
+			# Original
+			cp "$inputImageFilePath" "$originalFilePath"
+			
+			# Lossless optimise (overwrites)
+			cp "$originalFilePath" "$losslessFilePath"
+			jpegoptim --quiet --all-normal --strip-all "$losslessFilePath"
+			
+			# Lossy optimise
+			if [ $minimumQuality -ne 100 ]; then
+				cp "$losslessFilePath" "$lossyFilePath"
+				jpegoptim --quiet --all-normal --strip-all --max="$minimumQuality" "$@" "$lossyFilePath"
+				ln -s "$lossyFilePath" "$outputImageFilePath"
+			else
+				ln -s "$losslessFilePath" "$outputImageFilePath"
+			fi
+			
+			# Width and Height
+			_website_generate_jpgDimension "$outputImageFilePath" width >"$outputBaseImageFilePath".width
+			_website_generate_jpgDimension "$outputImageFilePath" height >"$outputBaseImageFilePath".height
+
+			# As a data-uri
+			_website_generate_toDataUri "$outputImageFilePath" "$mimeType" "$outputBaseImageFilePath"
+		;;
+		
+		image/tiff)
+			local convertedFilePath="$outputBaseImageFilePath".converted.png
+			
+			# Converted
+			local TMP_FOLDER
+			core_temporaryFiles_newFolderToRemoveOnExit
+			tiff2png -faxpect -compression 9 -destdir "$TMP_FOLDER" "$inputImageFilePath"
+			
+			set +f
+				mv "$TMP_FOLDER"/*.png "$convertedFilePath"
+			set -f
+			
+			# Call ourselves
+			website_generate_optimiseImageForEmbedding "$minimumQuality" "$convertedFilePath"
+		;;
+		
+		image/gif)
+			local convertedFilePath="$outputBaseImageFilePath".converted.png
+			local preConvertedFilePath="$outputBaseImageFilePath".converted.gif
+			
+			# Converted
+			cp "$inputImageFilePath" "$preConvertedFilePath"
+			set +e
+				gif2png -f -m -n -r -s -O "$preConvertedFilePath"
+				local exitCode=$?
+			set -e
+			if [ $exitCode -ne 0 ]; then
+				core_exitError 1 "Was an animated GIF"
+			fi
+			rm "$preConvertedFilePath"
+			
+			# Call ourselves
+			website_generate_optimiseImageForEmbedding "$minimumQuality" "$convertedFilePath"
+		;;
+		
+	esac
+}
+
+core_usesIn curl
+core_usesIn jsonwriter
+core_dependency_requires '*' cat
+website_generate_favicon()
+{
+	local iosWindowsAndAndroidChromeAppName="$1"
+	local androidChromeStartUrl="$2"
+	
+	_website_generate_favicon_validateRequiredSettings
+	if core_variable_isUnset website_settings_realfavicongeneratorUrl; then
+		local website_settings_realfavicongeneratorUrl='https://realfavicongenerator.net/api/favicon'
+	fi
+	
+	local faviconPngFileAtLeast260By260
+	_website_generate_favicon_validateFavicon
+	
+	local imageBase64Encoded="$(_website_generate_base64Encoded "$faviconPngFileAtLeast260By260")"
+	local jsonEncodedIosWindowsAndAndroidChromeAppName="$(jsonwriter_string "$iosWindowsAndAndroidChromeAppName")"
+	local jsonEncodedAndroidChromeStartUrl="$(jsonwriter_string "$androidChromeStartUrl")"
+	
+	local TMP_FILE
+	core_temporaryFiles_newFileToRemoveOnExit
+	local curl_uploadFile="$TMP_FILE"
+	cat >"$requestJsonFilePath" <<-EOF
+		{
+			"favicon_generation":
+			{
+				"api_key": "${website_settings_realfavicongeneratorApiKey}",
+				"master_picture":
+				{
+					"type": "inline",
+					"content": "${imageBase64Encoded}"
+				},
+				"favicon_design":
+				{
+					"ios":
+					{
+						"picture_aspect": "background_and_margin",
+						"background_color": "#ffffff",
+						"margin": "11%",
+						"assets":
+						{
+							"ios6_and_prior_icons": true,
+							"ios7_and_later_icons": true,
+							"precomposed_icons": true,
+							"declare_only_default_icon": false
+						},
+						"app_name": "${jsonEncodedIosWindowsAndAndroidChromeAppName}"
+					},
+					"desktop_browser":
+					[
+					],
+					"windows":
+					{
+						"picture_aspect": "no_change",
+						"background_color": "#da532c",
+						"on_conflict": "override",
+						"assets":
+						{
+							"windows_80_ie_10_tile": true,
+							"windows_10_ie_11_edge_tiles":
+							{
+								"small": true,
+								"medium": true,
+								"big": true,
+								"rectangle": true
+							}
+						},
+						"app_name": "${jsonEncodedIosWindowsAndAndroidChromeAppName}"
+					},
+					"android_chrome":
+					{
+						"picture_aspect": "shadow",
+						"theme_color": "#ffffff",
+						"manifest":
+						{
+							"name": "${jsonEncodedIosWindowsAndAndroidChromeAppName}",
+							"start_url": "${jsonEncodedAndroidChromeStartUrl}",
+							"display": "standalone",
+							"orientation": "not_set",
+							"on_conflict": "override",
+							"declared": true
+						},
+						"assets":
+						{
+							"legacy_icon": true,
+							"low_resolution_icons": true
+						}
+					},
+					"safari_pinned_tab":
+					{
+						"picture_aspect": "black_and_white",
+						"threshold": 80,
+						"theme_color": "#5bbad5"
+					}
+				},
+				"settings":
+				{
+					"scaling_algorithm": "Mitchell",
+					"error_on_image_too_small": false
+				}
+			}
+		}
+	EOF
+	
+	local outputFilePath=/dev/null
+	local curl_httpStatusCode
+	curl_http 'none' '' POST "$website_settings_realfavicongeneratorUrl" "$outputFilePath"
+}
+
+core_dependency_requires '*' tidy
+_website_generate_html5Tidy()
+{
+	local inputFilePath="$1"
+	local outputFilePath="$2"
+	
+	# Stuff that might need to vary:-
+	# merge-spans
+	# merge-divs
+	# omit-optional-tags
+	# ?show-body-only	
+	tidy -config "$_program_etcPath"/website/html5-tidy.config -q -output "$outputFilePath" >"$outputFilePath"
+}
+
+core_dependency_requires '*' cat
+_website_generate_htmlContentSnippet()
+{
+	local snippetHtmlInputFilePath="$1"
+	local contentSnippetHtmlOutputFilePath="$2"
+	local potentiallyAbsentClassesFile="$3"
+	local contentId="$4"
+	local originalContentKind="$5"
+	
+	# Wrap snippet in a 'div' containing classes; these can be used to style images, apply heading numbers, etc
+	{
+		printf '<div id="%s" class="%s' "$contentId" "$originalContentKind"
+		if [ -s "$potentiallyAbsentClassesFile" ]; then
+			local class
+			while IFS='' read -r class
+			do
+				case "$class" in
+					
+					'')
+						:
+					;;
+					
+					'#'*)
+						:
+					;;
+					
+					* *)
+					
+					;;
+					
+					*)
+						printf ' %s' "$class"
+					;;
+					
+				esac
+			done
+		fi
+		
+		printf '">'
+		
+		cat "$snippetHtmlInputFilePath"
+		
+		printf '</div>'
+	} >"$contentSnippetHtmlOutputFilePath"
+}
+
+# Assumes at least version 5.4.0 of multimarkdown
+core_dependency_requires '*' mkdir multimarkdown cat hxselect hxprune
+website_generate_multimarkdownSnippet()
+{
+	local inputMultimarkdownFilePath="$website_sourceFolderPath"/"$website_current_componentFolderPath"/"$website_current_componentName".mmd
+		
+	local outputCacheFolderPath
+	_website_generate_makeOutputCacheFolder
+	
+	local outputMetadataKeysFilePath="$outputFolderPath"/metadata-keys
+	local mmdSnippetOutputFile="$outputFolderPath"/snippet.mmd.html
+	local tidySnippetOutputFile="$outputFolderPath"/snippet.tidy.html
+	local tidyTocOutputFile="$outputFolderPath"/toc.tidy.html
+	local tidyFootnotesOutputFile="$outputFolderPath"/footnotes.tidy.html
+	local snippetWithoutTocAndFootnotesOutputFile="$outputFolderPath"/snippet.without-toc-and-footnotes.html
+	local classesFilePath="$website_sourceFolderPath"/"$website_current_componentFolderPath"/"$website_current_componentName".classes
+	
+	# Extract markdown metadata key-value pairs
+	multimarkdown --metadata-keys "$inputMultimarkdownFilePath" >"$outputMetadataKeysFilePath"
+	local metadataKey
+	while IFS='' read -r metadataKey
+	do
+		multimarkdown --extract "$metadataKey" "$inputMultimarkdownFilePath" >"$outputCacheFolderPath"/"$metadataKey".metadata-value
+	done <"$outputMetadataKeysFilePath"
+	
+	# Convert markdown to HTML with TOC (if {{TOC}} is present) and footnotes
+	multimarkdown --output="$mmdSnippetOutputFile" --to=html --snippet --process-html --smart --notes --accept --labels --mask --escaped-line-breaks "$inputMultimarkdownFilePath"
+	
+	# Run HTML tidy, which should validate any malformed embedded HTML, and remove CDATA sections so code is easier to work with
+	_website_generate_html5Tidy "$mmdSnippetOutputFile" "$tidySnippetOutputFile"
+	
+	# Extract TOC (if any) without surrounding div
+	cat "$mmdSnippetOutputFile" | hxselect -c -l en '.TOC' >"$tidyTocOutputFile"
+	_website_generate_htmlContentSnippet "$tidyFootnotesOutputFile" "$outputFolderPath"/table-of-contents.html '' table-of-contents multimarkdown
+	
+	# Extract footnotes (if any)) without surrounding div
+	cat "$mmdSnippetOutputFile" | hxselect -c -l en '.footnotes' >"$tidyFootnotesOutputFile"
+	_website_generate_htmlContentSnippet "$tidyFootnotesOutputFile" "$outputFolderPath"/footnotes.html '' footnotes multimarkdown
+	
+	# Remove TOC and footnotes
+	cat "$mmdSnippetOutputFile" | hxprune -c 'TOC' -x | hxprune -c 'footnotes' -x >"$snippetWithoutTocAndFootnotesOutputFile"
+	_website_generate_htmlContentSnippet "$snippetWithoutTocAndFootnotesOutputFile" "$outputFolderPath"/content.html "$classesFilePath" content multimarkdown
+	
+	# hxpipe / hxunpipe
+	# xidel (applies XSL inline code and CSS selectors-ish to change HTML) (free pascal)!
+	# xmlstarlet
+	# write a lua program that parses HTML and applies transformation scripts to the DOM
+		# - https://github.com/msva/lua-htmlparser
+	
+	# lua / mustache for most templates (lustache)
+}
+
+_website_generate_hxpipe_replaceImgSrc()
+{
+	local filePath="$1"
+	
+	local line
+	hxpipe "$filePath" | while IFS='' read -r line
+	do
+		case "$line" in
+			
+			# Comment
+			'*'*)
+				printf '%s\n' "$line"
+			;;
+			
+			# Processing Instruction
+			'?'*)
+				printf '%s\n' "$line"
+			;;
+			
+			# DOCTYPE
+			'!'*)
+				printf '%s\n' "$line"
+			;;
+			
+			# Attribute of element (opening tag or empty tag yet to happen)
+			'A'*)
+				printf '%s\n' "$line"
+			;;
+			
+			# Opening tag of element (if not empty) (may be preceeded by zero or more 'A'*)
+			'('*)
+				printf '%s\n' "$line"
+			;;
+			
+			# Empty tag of element (may be preceeded by zero or more 'A'*)
+			'|'*)
+				printf '%s\n' "$line"
+			;;
+			
+			# Closing tag of element (if not empty)
+			')'*)
+				printf '%s\n' "$line"
+			;;
+			
+			# Text
+			'-'*)
+				printf '%s\n' "$line"
+			;;
+			
+			# Line number (optional)
+			'L'*)
+				:
+			;;
+			
+			*)
+				core_exitError 1 "Did not expect line '$line"
+			;;
+			
+		esac
+	done
+}
+
+_website_generate_makeOutputCacheFolder()
+{
+	local outputCacheFolderPath="$website_cacheFolderPath"/built/"$website_current_componentFolderPath"
+	mkdir -m 0700 -p "$outputFolderPath"
+}
+
+core_dependency_requires '*' file awk
+_website_generate_fileMimeType()
+{
+	local filePath="$1"
+	
+	file --mime-type "$filePath" | awk -F': ' '{print $2}'
+}
+
+_website_generate_favicon_validateFavicon()
+{
+	faviconPngFileAtLeast260By260="$website_sourceFolderPath"/"$website_current_componentFolderPath"/favicon.png
+	
+	if [ ! -f "$faviconPngFileAtLeast260By260" ]; then
+		core_exitError 1 "There must be a favicon file '$faviconPngFileAtLeast260By260'"
+	fi
+	
+	local mimeType="$(_website_generate_fileMimeType "$faviconPngFileAtLeast260By260")"
+	if [ "$mimeType" != 'image/png' ]; then
+		core_exitError 1 "Must be a PNG"
+	fi
+	
+	local width="$(_website_generate_pngDimension "$faviconPngFileAtLeast260By260" width)"
+	local height="$(_website_generate_pngDimension "$faviconPngFileAtLeast260By260" height)"
+	if [ "$width" -ne "$height" ]; then
+		core_exitError 1 "width must be the same as height"
+	fi
+	if [ $width -lt 260 ]; then
+		core_exitError 1 "width or height must be at least 260 pixels"
+	fi
+}
+
+_website_generate_favicon_validateRequiredSettings()
+{
+	if core_variable_isUnset website_settings_realfavicongeneratorApiKey; then
+		core_exitError 1 "Make sure the setting 'website_settings_realfavicongeneratorApiKey' is set"
+	fi
+}
+
+core_dependency_requires '*' pngcheck awk tr
+_website_generate_pngDimension()
+{
+	local imageFilePath="$1"
+	local dimension="$2"
+	
+	case "$dimension" in
+		
+		width)
+			local field='1'
+		;;
+		
+		height)
+			local field='3'
+		;;
+		
+	esac
+	
+	pngcheck "$imageFilePath" | awk -F' ' '{printf $3}' | tr -d '(,' | awk -F'x' '{print $'"$field"'}'
+}
+
+core_dependency_requires '*' jpeginfo awk
+_website_generate_jpgDimension()
+{
+	local imageFilePath="$1"
+	local dimension="$2"
+	
+	case "$dimension" in
+		
+		width)
+			local field='1'
+		;;
+		
+		height)
+			local field='3'
+		;;
+		
+	esac
+	
+	jpeginfo --lsstyle "$imageFilePath" | awk -F' ' '{print $'"$field"'}'
+}
+
+_website_generate_toDataUri()
+{
+	local inputFilePath="$1"
+	local mimeType="$2"
+	local outputBaseFilePath="$3"
+	
+	local outputCacheFolderPath
+	_website_generate_makeOutputCacheFolder
+	
+	{
+		printf 'data:'
+		printf '%s;' "$mimeType"
+		printf 'base64,'
+		_website_generate_base64Encoded "$inputFilePath"
+	} >"$outputBaseFilePath".data-uri
+}
+
+core_dependency_requires '*' base64 tr
+_website_generate_base64Encoded()
+{
+	local inputFilePath="$1"
+	
+	base64 "$inputFilePath" | tr -d '\n'
+}

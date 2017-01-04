@@ -1,0 +1,18 @@
+[submodule "etc/shellfire/paths.d"]
+	path = etc/shellfire/paths.d
+	url = https://github.com/shellfire-dev/paths.d
+	branch = master
+[submodule "lib/shellfire/core"]
+	path = lib/shellfire/core
+	url = https://github.com/shellfire-dev/core.git
+	branch = master
+[submodule "lib/shellfire/git"]
+	path = lib/shellfire/git
+	url = https://github.com/shellfire-dev/git.git
+	branch = master
+[submodule "lib/shellfire/curl"]
+	path = lib/shellfire/curl
+	url = https://github.com/shellfire-dev/curl.git
+[submodule "lib/shellfire/jsonwriter"]
+	path = lib/shellfire/jsonwriter
+	url = https://github.com/shellfire-dev/jsonwriter.git
